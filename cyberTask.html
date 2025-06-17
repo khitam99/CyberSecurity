@@ -7,15 +7,14 @@
 <style>
   body {
     font-family: Arial, sans-serif;
-    background: #6a11cb;
-    background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+    background: #6A11CB;
+    background: linear-gradient(135deg, #6A11CB 0%, #2575FC 100%);
     margin: 0; padding: 0;
     display: flex;
     justify-content: center;
     align-items: center;
     height: 100vh;
   }
-
   .container {
     background: white;
     padding: 25px 30px;
@@ -23,18 +22,15 @@
     width: 320px;
     box-shadow: 0 4px 10px rgba(0,0,0,0.2);
   }
-
   h2 {
     text-align: center;
     color: #333;
   }
-
   form {
     display: flex;
     flex-direction: column;
     margin-top: 15px;
   }
-
   input, select, button {
     margin: 8px 0;
     padding: 10px;
@@ -42,79 +38,71 @@
     border-radius: 6px;
     border: 1.5px solid #ccc;
   }
-
   input:focus, select:focus {
-    border-color: #6a11cb;
+    border-color: #6A11CB;
     outline: none;
   }
-
   button {
-    background: #6a11cb;
+    background: #6A11CB;
     color: white;
     border: none;
     cursor: pointer;
     font-weight: bold;
   }
-
   button:hover {
-    background: #2575fc;
+    background: #2575FC;
   }
-
   #message {
     margin: 10px 0;
     font-weight: bold;
     text-align: center;
     color: red;
   }
-
   #toggle-text {
     text-align: center;
     margin-top: 12px;
     font-size: 14px;
     color: #555;
   }
-
   #toggle-link {
-    color: #6a11cb;
+    color: #6A11CB;
     cursor: pointer;
     font-weight: bold;
   }
-
   #upload-section {
     display: none;
     margin-top: 15px;
   }
-
   ul {
     list-style: none;
     padding-left: 0;
   }
-
   li {
-    background: #f1f1f1;
+    background: #F1F1F1;
     padding: 6px 10px;
     margin: 4px 0;
     border-radius: 5px;
   }
-
   #logout-btn {
     margin-top: 15px;
-    background: #e74c3c;
+    background: #E74C3C;
   }
-
   #logout-btn:hover {
-    background: #c0392b;
+    background: #C0392B;
   }
-
+  #captcha-container {
+    margin: 10px 0;
+    display: none;
+    text-align: center;
+  }
 </style>
+<!-- Google reCAPTCHA -->
+<script src="https://www.google.com/recaptcha/api.js" async defer></script>
 </head>
 <body>
-
 <div class="container">
-
   <h2 id="form-title">Login</h2>
   <div id="message"></div>
-
   <form id="auth-form">
     <input type="text" id="username" placeholder="Username" required autocomplete="username" />
     <input type="password" id="password" placeholder="Password" required autocomplete="current-password" />
@@ -122,36 +110,41 @@
       <option value="User">User</option>
       <option value="Admin">Admin</option>
     </select>
+    <div id="captcha-container">
+      <div class="g-recaptcha" data-sitekey="6Len1mMrAAAAACYxGbt9N_eJaWG6u8U4yQl4LTUQ"></div>
+    </div>
     <button type="submit" id="submit-btn">Login</button>
   </form>
-
   <p id="toggle-text">
     Don't have an account? <span id="toggle-link">Register here</span>
   </p>
-
   <div id="upload-section">
     <h3>Upload PDF File</h3>
     <form id="upload-form">
       <input type="file" id="file-input" accept="application/pdf" required />
       <button type="submit">Upload</button>
     </form>
-
     <h3>Your Files</h3>
     <ul id="file-list"></ul>
-
     <button id="logout-btn">Logout</button>
   </div>
-
 </div>
-
 <script>
+  // Helper for SHA-256 hashing (returns hex string)
+  async function hashPassword(password) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
   const formTitle = document.getElementById('form-title');
   const messageDiv = document.getElementById('message');
   const authForm = document.getElementById('auth-form');
   const usernameInput = document.getElementById('username');
   const passwordInput = document.getElementById('password');
   const submitBtn = document.getElementById('submit-btn');
-  const toggleLink = document.getElementById('toggle-link');
   const toggleText = document.getElementById('toggle-text');
   const uploadSection = document.getElementById('upload-section');
   const uploadForm = document.getElementById('upload-form');
@@ -159,19 +152,53 @@
   const logoutBtn = document.getElementById('logout-btn');
   const fileList = document.getElementById('file-list');
   const roleSelect = document.getElementById('role-select');
+  const captchaContainer = document.getElementById('captcha-container');
 
   let isLogin = true;
-
   const users = {};
   let currentUser = null;
   const userFiles = {};
 
+  // Track failed login attempts & block timers per username
+  const loginAttempts = {};
+  const blockedUsers = {};
+
+  // Inactivity logout timer
+  let inactivityTimer;
+
+  // Show messages
   function showMessage(msg, isError = true) {
     messageDiv.textContent = msg;
     messageDiv.style.color = isError ? 'red' : 'green';
   }
 
-  toggleLink.onclick = () => {
+  // Reset inactivity timer for auto-logout
+  function resetInactivityTimer() {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      logout(true);
+      alert('You have been logged out due to inactivity.');
+    }, 15 * 60 * 1000); // 15 minutes
+  }
+
+  // Attach user activity listeners
+  function bindActivityListeners() {
+    ['mousemove', 'keydown', 'click'].forEach(evt =>
+      document.addEventListener(evt, resetInactivityTimer)
+    );
+    resetInactivityTimer();
+  }
+
+  // Remove user activity listeners
+  function unbindActivityListeners() {
+    ['mousemove', 'keydown', 'click'].forEach(evt =>
+      document.removeEventListener(evt, resetInactivityTimer)
+    );
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+  }
+
+  // Toggle register/login form
+  const toggleLink = () => {
     isLogin = !isLogin;
     if (isLogin) {
       formTitle.textContent = 'Login';
@@ -179,23 +206,91 @@
       toggleText.innerHTML = "Don't have an account? <span id='toggle-link'>Register here</span>";
       roleSelect.style.display = 'none';
       passwordInput.setAttribute('autocomplete', 'current-password');
+      captchaContainer.style.display = 'none';
+      if (grecaptcha) grecaptcha.reset();
     } else {
       formTitle.textContent = 'Register';
       submitBtn.textContent = 'Register';
       toggleText.innerHTML = "Already have an account? <span id='toggle-link'>Login here</span>";
       roleSelect.style.display = 'block';
       passwordInput.setAttribute('autocomplete', 'new-password');
+      captchaContainer.style.display = 'none';
+      if (grecaptcha) grecaptcha.reset();
     }
     messageDiv.textContent = '';
     authForm.reset();
-    // Rebind toggle link event after innerHTML change
-    document.getElementById('toggle-link').onclick = toggleLink.onclick;
+
+    // Re-attach toggle link event listener after innerHTML change
+    document.getElementById('toggle-link').onclick = toggleLink;
   };
 
-  authForm.onsubmit = e => {
+  // Show upload section after login
+  function showUploadSection() {
+    authForm.style.display = 'none';
+    toggleText.style.display = 'none';
+    formTitle.style.display = 'none';
+    uploadSection.style.display = 'block';
+    updateFileList();
+    bindActivityListeners();
+  }
+
+  // Update the file list UI
+  function updateFileList() {
+    fileList.innerHTML = '';
+    const role = users[currentUser].role;
+    if (role === 'Admin') {
+      for (const user in userFiles) {
+        if (userFiles[user].length === 0) continue;
+        const userTitle = document.createElement('li');
+        userTitle.style.fontWeight = 'bold';
+        userTitle.textContent = user + ':';
+        fileList.appendChild(userTitle);
+        userFiles[user].forEach(fileName => {
+          const li = document.createElement('li');
+          li.textContent = fileName;
+          fileList.appendChild(li);
+        });
+      }
+    } else {
+      if (userFiles[currentUser].length === 0) {
+        const li = document.createElement('li');
+        li.textContent = 'No files uploaded yet.';
+        fileList.appendChild(li);
+      } else {
+        userFiles[currentUser].forEach(fileName => {
+          const li = document.createElement('li');
+          li.textContent = fileName;
+          fileList.appendChild(li);
+        });
+      }
+    }
+  }
+
+  // Logout function
+  function logout(showMsg = false) {
+    currentUser = null;
+    uploadSection.style.display = 'none';
+    authForm.style.display = 'flex';
+    toggleText.style.display = 'block';
+    formTitle.style.display = 'block';
+    formTitle.textContent = 'Login';
+    toggleText.innerHTML = "Don't have an account? <span id='toggle-link'>Register here</span>";
+    roleSelect.style.display = 'none';
+    showMessage(showMsg ? 'Logged out due to inactivity.' : 'Logged out successfully.', false);
+    authForm.reset();
+    captchaContainer.style.display = 'none';
+    if (grecaptcha) grecaptcha.reset();
+
+    // Re-attach toggle link event listener after innerHTML replacement
+    document.getElementById('toggle-link').onclick = toggleLink;
+
+    unbindActivityListeners();
+  }
+
+  // Handle auth form submission (login/register)
+  authForm.onsubmit = async e => {
     e.preventDefault();
     showMessage('');
-
     const username = usernameInput.value.trim();
     const password = passwordInput.value;
     const role = roleSelect.value;
@@ -205,41 +300,89 @@
       return;
     }
 
+    // Check if user is blocked
+    if (blockedUsers[username]) {
+      const blockTime = blockedUsers[username];
+      const now = Date.now();
+      if (now < blockTime) {
+        const secondsLeft = Math.ceil((blockTime - now) / 1000);
+        showMessage(`Too many failed login attempts. Try again in ${secondsLeft} seconds.`);
+        return;
+      } else {
+        delete blockedUsers[username];
+        loginAttempts[username] = 0;
+        captchaContainer.style.display = 'none';
+        if (grecaptcha) grecaptcha.reset();
+      }
+    }
+
     if (!isLogin) {
+      // Register
       if (users[username]) {
         showMessage('Username already exists.');
         return;
       }
-      // Password strength: 8 chars minimum with uppercase, lowercase, special char
+      // Password strength: min 8 chars, uppercase, lowercase, special char
       const passRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{8,}$/;
       if (!passRegex.test(password)) {
         showMessage('Password must have uppercase, lowercase, special char, min 8 chars.');
         return;
       }
-      users[username] = { password, role };
+      // Hash password before storing
+      const hashedPassword = await hashPassword(password);
+
+      users[username] = { password: hashedPassword, role };
       userFiles[username] = [];
       showMessage('Registered successfully! You can login now.', false);
-      toggleLink.click();
+      toggleLink();
     } else {
-      if (users[username] && users[username].password === password) {
+      // Login
+      // Show captcha if failed >=3
+      if ((loginAttempts[username] || 0) >= 3) {
+        captchaContainer.style.display = 'block';
+        // Verify captcha
+        const captchaResponse = grecaptcha.getResponse();
+        if (!captchaResponse) {
+          showMessage('Please complete the CAPTCHA.');
+          return;
+        }
+        // Normally you'd verify captcha server-side, here we assume it's ok for demo
+      }
+
+      if (!users[username]) {
+        showMessage('Invalid username or password.');
+        loginAttempts[username] = (loginAttempts[username] || 0) + 1;
+        checkBlockUser(username);
+        return;
+      }
+      const hashedPassword = await hashPassword(password);
+      if (users[username].password === hashedPassword) {
         currentUser = username;
+        loginAttempts[username] = 0;
+        blockedUsers[username] = null;
+        captchaContainer.style.display = 'none';
+        if (grecaptcha) grecaptcha.reset();
         showUploadSection();
         showMessage('');
       } else {
         showMessage('Invalid username or password.');
+        loginAttempts[username] = (loginAttempts[username] || 0) + 1;
+        checkBlockUser(username);
       }
     }
     passwordInput.value = '';
   };
 
-  function showUploadSection() {
-    authForm.style.display = 'none';
-    toggleText.style.display = 'none';
-    formTitle.style.display = 'none';
-    uploadSection.style.display = 'block';
-    updateFileList();
+  function checkBlockUser(username) {
+    if (loginAttempts[username] >= 5) {
+      blockedUsers[username] = Date.now() + 3 * 60 * 1000; // 3 minutes block
+      showMessage('Too many failed login attempts. You are blocked for 3 minutes.');
+    } else if (loginAttempts[username] >= 3) {
+      captchaContainer.style.display = 'block';
+    }
   }
 
+  // Upload form submission
   uploadForm.onsubmit = e => {
     e.preventDefault();
     if (!fileInput.files.length) {
@@ -256,53 +399,11 @@
     updateFileList();
   };
 
-  function updateFileList() {
-    fileList.innerHTML = '';
-    const role = users[currentUser].role;
-    if (role === 'Admin') {
-      // Show all users files
-      for (const user in userFiles) {
-        if (userFiles[user].length === 0) continue;
-        const userTitle = document.createElement('li');
-        userTitle.style.fontWeight = 'bold';
-        userTitle.textContent = user + ':';
-        fileList.appendChild(userTitle);
-        userFiles[user].forEach(fileName => {
-          const li = document.createElement('li');
-          li.textContent = fileName;
-          fileList.appendChild(li);
-        });
-      }
-    } else {
-      // Show current user's files only
-      if (userFiles[currentUser].length === 0) {
-        const li = document.createElement('li');
-        li.textContent = 'No files uploaded yet.';
-        fileList.appendChild(li);
-      } else {
-        userFiles[currentUser].forEach(fileName => {
-          const li = document.createElement('li');
-          li.textContent = fileName;
-          fileList.appendChild(li);
-        });
-      }
-    }
-  }
+  logoutBtn.onclick = () => logout();
 
-  logoutBtn.onclick = () => {
-    currentUser = null;
-    uploadSection.style.display = 'none';
-    authForm.style.display = 'flex';
-    toggleText.style.display = 'block';
-    formTitle.style.display = 'block';
-    formTitle.textContent = 'Login';
-    toggleText.innerHTML = "Don't have an account? <span id='toggle-link'>Register here</span>";
-    roleSelect.style.display = 'none';
-    showMessage('Logged out successfully.', false);
-    authForm.reset();
-    document.getElementById('toggle-link').onclick = toggleLink.onclick;
-  };
+  // Initially attach toggle link click
+  document.getElementById('toggle-link').onclick = toggleLink;
+
 </script>
-
 </body>
 </html>
